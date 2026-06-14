@@ -18,6 +18,8 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
 
 
@@ -43,6 +45,90 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "fit_card": None,            # string returned by create_fit_card
         "error": None,               # set if the interaction ended early
     }
+
+
+def _parse_query(query: str) -> dict:
+    """Extract description, size, and max_price from a natural language query."""
+    text = query.strip()
+    lower = text.lower()
+    max_price = None
+    size = None
+    description = text
+
+    price_match = re.search(
+        r"(?:under|below|max)\s+\$?\s*(\d+(?:\.\d+)?)", lower
+    )
+    if not price_match:
+        price_match = re.search(r"\$\s*(\d+(?:\.\d+)?)", lower)
+
+    if price_match:
+        max_price = float(price_match.group(1))
+        description = description[: price_match.start()] + description[price_match.end() :]
+
+    desc_lower = description.lower()
+    size_match = re.search(r"size\s*:?\s*(\S+)", desc_lower)
+    if size_match:
+        size = size_match.group(1).strip(".,;")
+        description = description[: size_match.start()] + description[size_match.end() :]
+    else:
+        standalone = re.search(r"\s([sxl]{1}|xs|xxs|xxl|m|l|s)\s", f" {desc_lower} ")
+        if standalone:
+            size = standalone.group(1)
+            start = standalone.start(1)
+            end = standalone.end(1)
+            description = description[:start] + description[end:]
+
+    description = re.sub(r"\s+", " ", description).strip(" ,.;")
+    if not description:
+        description = text
+
+    return {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    }
+
+
+def _no_results_message(parsed: dict) -> str:
+    """Build a helpful error when search_listings returns nothing."""
+    desc = parsed["description"]
+    size = parsed.get("size")
+    max_price = parsed.get("max_price")
+
+    message = f"No listings matched '{desc}'"
+    if size or max_price is not None:
+        filters = []
+        if size:
+            filters.append(f"size {size}")
+        if max_price is not None:
+            filters.append(f"under ${max_price:g}")
+        message += " in " + " ".join(filters)
+
+    tips = ["Try broadening your search"]
+    if max_price is not None:
+        tips.append(f"raising your budget above ${max_price:g}")
+    if size:
+        tips.append("removing the size filter")
+    message += ". " + ", ".join(tips) + "."
+    return message
+
+
+def _fit_card_failure_message(selected_item: dict) -> str:
+    """Build an error when create_fit_card fails after a listing was found."""
+    title = selected_item["title"]
+    price = selected_item["price"]
+    platform = selected_item["platform"]
+    return (
+        f"Found {title} (${price:g} on {platform}) but couldn't generate a fit card caption. "
+        "Try your search again, or ask how to style this piece and we'll skip the caption."
+    )
+
+
+def _is_fit_card_failure(fit_card: str) -> bool:
+    """True if create_fit_card returned empty output or its error string."""
+    if not fit_card or not fit_card.strip():
+        return True
+    return fit_card.strip().startswith("Could not generate a fit card")
 
 
 # ── planning loop ─────────────────────────────────────────────────────────────
@@ -92,9 +178,44 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    session["parsed"] = _parse_query(query)
+
+    results = search_listings(
+        description=session["parsed"]["description"],
+        size=session["parsed"]["size"],
+        max_price=session["parsed"]["max_price"],
+    )
+    session["search_results"] = results
+
+    if not results:
+        session["error"] = _no_results_message(session["parsed"])
+        return session
+
+    session["selected_item"] = results[0]
+
+    outfit = suggest_outfit(
+        new_item=session["selected_item"],
+        wardrobe=session["wardrobe"],
+    )
+    session["outfit_suggestion"] = outfit
+
+    if not outfit or not outfit.strip():
+        session["error"] = "Couldn't generate a styling suggestion. Try again."
+        return session
+
+    fit_card = create_fit_card(
+        outfit=session["outfit_suggestion"],
+        new_item=session["selected_item"],
+    )
+    session["fit_card"] = fit_card
+
+    if _is_fit_card_failure(fit_card):
+        session["error"] = _fit_card_failure_message(session["selected_item"])
+        session["fit_card"] = None
+        return session
+
     return session
 
 

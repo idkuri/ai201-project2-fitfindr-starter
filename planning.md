@@ -163,7 +163,21 @@ If `outfit` is empty or whitespace-only, the tool returns a descriptive error me
 ## State Management
 
 **How does information from one tool get passed to the next?**
-<!-- Describe how your agent stores and accesses state within a session. What data is tracked? How is it passed between tool calls? -->
+
+Everything for one user interaction lives in a single **session dict** created by `_new_session(query, wardrobe)`. The planning loop reads from and writes to this dict — nothing is passed between tools except through session fields.
+
+| Session field | Set when | Used by |
+|---------------|----------|---------|
+| `query` | session init | reference only (original user input) |
+| `parsed` | after regex parse | `search_listings(description, size, max_price)` |
+| `search_results` | after search | pick `selected_item = results[0]` |
+| `selected_item` | top search result | `suggest_outfit(new_item, wardrobe)` and `create_fit_card(outfit, new_item)` |
+| `wardrobe` | session init | `suggest_outfit` |
+| `outfit_suggestion` | after suggest | `create_fit_card(outfit, new_item)` |
+| `fit_card` | after fit card | returned to caller on success |
+| `error` | on early exit | returned to caller; check this first |
+
+**Data flow:** `parsed` → `search_results` → `selected_item` → `outfit_suggestion` → `fit_card`. If any step fails, `error` is set and the function returns immediately — downstream fields stay `None`.
 
 ---
 
@@ -218,32 +232,41 @@ flowchart TD
 
 ## AI Tool Plan
 
-<!-- For each part of the implementation below, describe:
-     - Which AI tool you plan to use (Claude, Copilot, ChatGPT, etc.)
-     - What you'll give it as input (which sections of this planning.md, your agent diagram)
-     - What you expect it to produce
-     - How you'll verify the output matches your spec before moving on
-
-     "I'll use AI to help me code" is not a plan.
-     "I'll give Claude my Tool 1 spec (inputs, return value, failure mode) and ask it to implement
-     search_listings() using load_listings() from the data loader — then test it against 3 queries
-     before trusting it" is a plan. -->
-
-**Milestone 2 — Planning doc:**
+**Milestone 2 — Planning doc**
 
 **AI tool:** Cursor (Claude)
 
-**What I gave it as input:** The ASCII architecture diagram from the project page (user query → planning loop → `search_listings` → `suggest_outfit` → `create_fit_card`, with session updates and error branches that return early).
+For the **Architecture** diagram, I gave Claude the ASCII flow from the project page (user query → planning loop → three tools → session updates → error branches that return early). I asked it to convert that into a Mermaid flowchart for the **Architecture** section.
 
-**What I expected it to produce:** A Mermaid flowchart for the **Architecture** section with the same tool order, session write steps, and three error paths all terminating at "Return session."
-
-**How I verified it:** Pasted the Mermaid block into [mermaid.live](https://mermaid.live) to confirm it renders. Compared it side by side with the project page ASCII art to make sure all three error branches and the happy path match.
-
-**Milestone 3 — Individual tool implementations:**
-
-**Milestone 4 — Planning loop and state management:**
+I expected a diagram with the same tool order, session write steps, and three error paths all ending at "Return session." Before using it, I pasted the Mermaid block into [mermaid.live](https://mermaid.live) to confirm it renders, then compared it side by side with the ASCII art to make sure the happy path and all three error branches match.
 
 ---
+
+**Milestone 3 — Individual tool implementations**
+
+**AI tool:** Cursor (Claude)
+
+For **`search_listings`**, I gave Claude the **Tool 1** block from this file (inputs, return value, failure mode), the `search_listings` stub and docstring in `tools.py`, and `utils/data_loader.py`. I asked it to implement the function using `load_listings()`, not direct JSON reads. Before running it, I checked that the generated code filters by all three parameters (`description`, `size`, `max_price`), scores keyword overlap, and returns `[]` without raising. Then I tested it with 3 queries: a happy path (`"vintage graphic tee"`, size `"M"`, max_price `30.0`), a no-results query (`"designer ballgown"`, size `"XXS"`, max_price `5.0`), and a query with no size/price filters (`"flannel"`).
+
+For **`suggest_outfit`**, I gave Claude the **Tool 2** block, the `suggest_outfit` stub, `data/wardrobe_schema.json`, and instructions to use Groq `llama-3.3-70b-versatile` with `GROQ_API_KEY` from `.env`. I asked it to handle empty `wardrobe["items"]` with general styling advice instead of crashing. Before using it, I checked that the code branches on empty wardrobe and calls `_get_groq_client()`. Then I tested with `get_example_wardrobe()` (response should reference wardrobe pieces) and `get_empty_wardrobe()` (non-empty general advice, no exception).
+
+For **`create_fit_card`**, I gave Claude the **Tool 3** block and the `create_fit_card(outfit, new_item)` stub signature. I asked it to guard empty/whitespace `outfit` with an error message string before calling Groq, and to use a higher temperature so captions vary. Before using it, I checked the empty-outfit guard runs before the LLM call and that both arguments are passed through. Then I tested empty outfit (error string, no crash) and ran the same valid input 4 times to confirm captions differed at temperature `0.9`.
+
+For **`tests/test_tools.py`**, I gave Claude the **Error Handling** table and asked for at least one test per failure mode, mocking `_call_groq` so tests don't hit the API. I verified with `python -m pytest tests/test_tools.py -v`, 9 tests passed.
+
+---
+
+**Milestone 4 — Planning loop and state management**
+
+**AI tool:** Cursor (Claude)
+
+For **`run_agent()`**, I gave Claude the **Planning Loop** pseudocode, **State Management** table, **Architecture** diagram (Mermaid + ASCII), **Error Handling** table, the `_new_session()` skeleton, and the numbered TODO steps in `agent.py`. I also pointed it at the completed, tested functions in `tools.py`.
+
+I expected a `run_agent(query, wardrobe)` that parses the query with regex, calls the three tools in order, writes every result to the session dict, and returns early on empty search results, empty outfit strings, or failed fit cards — without calling downstream tools unconditionally.
+
+Before using it, I reviewed the generated code against the **Branch summary** table: does it branch on `search_listings` results? Does it store `parsed`, `search_results`, `selected_item`, `outfit_suggestion`, and `fit_card` in the session? Does it skip `suggest_outfit` when search is empty and skip `create_fit_card` when outfit is empty?
+
+Then I verified with `python agent.py` (happy path + no-results path), `python -m pytest tests/test_agent.py -v` (5 tests confirming early exits and tool call order), and filled in the **State Management** section to match what the code actually does.
 
 ## A Complete Interaction (Step by Step)
 
