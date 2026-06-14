@@ -134,16 +134,14 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 Write out what a full user interaction looks like from start to finish — tool call by tool call. Use a specific example query.
 
+FitFindr helps users find thrift pieces and style them with stuff they already own. The user describes what they want, the agent runs `search_listings` first. If it finds matches, it passes the top pick plus the user's wardrobe into `suggest_outfit`, then runs `create_fit_card` on the result. If search comes up empty, the agent tells the user what to tweak and stops. No calling the other tools with bad input.
+
 **Example user query:** "I'm looking for a vintage graphic tee under $30. I mostly wear baggy jeans and chunky sneakers. What's out there and how would I style it?"
 
-**Step 1:**
-<!-- What does the agent do first? Which tool is called? With what input? -->
+**Step 1:** Agent calls `search_listings("vintage graphic tee", size="M", max_price=30.0)`. It filters listings by keywords in the title, description, and style tags, then applies size and price limits. Gets back 3 matches. Top pick: **Vintage Band Tee, Faded Grey** ($19, Depop, fair condition).
 
-**Step 2:**
-<!-- What happens next? What was returned from step 1? What tool is called now? -->
+**Step 2:** Agent calls `suggest_outfit(new_item=<band tee>, wardrobe=get_example_wardrobe())`. Tool looks at the tee's style tags, colors, and category, then picks pieces from the wardrobe that go with it (baggy straight-leg jeans, chunky white sneakers). Returns: *"Pair this with your wide-leg jeans and platform Docs for a classic 90s grunge look. Roll the sleeves once and tuck the front corner slightly for shape."*
 
-**Step 3:**
-<!-- Continue until the full interaction is complete -->
+**Step 3:** Agent calls `create_fit_card(outfit=<suggestion from step 2>, new_item=<band tee>)`. Tool turns the outfit and listing into a post-ready caption. Returns: *"thrifted this faded band tee off depop for $19 and honestly it was made for my wide-legs 🖤 full look in my stories"*
 
-**Final output to user:**
-<!-- What does the user actually see at the end? -->
+**Final output to user:** One response with the listing details (title, price, platform, condition), the styling suggestion using their wardrobe, and the fit card caption to copy.
