@@ -13,6 +13,7 @@ Tools:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -20,6 +21,8 @@ from groq import Groq
 from utils.data_loader import load_listings
 
 load_dotenv()
+
+_GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 # ── Groq client ───────────────────────────────────────────────────────────────
@@ -32,6 +35,72 @@ def _get_groq_client():
             "GROQ_API_KEY not set. Add it to a .env file in the project root."
         )
     return Groq(api_key=api_key)
+
+
+def _call_groq(prompt: str, temperature: float = 0.7) -> str:
+    """Send a prompt to Groq and return the assistant's text response."""
+    client = _get_groq_client()
+    completion = client.chat.completions.create(
+        model=_GROQ_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+    )
+    content = completion.choices[0].message.content
+    return content.strip() if content else ""
+
+
+def _format_new_item(item: dict) -> str:
+    """Format a listing dict for an LLM prompt."""
+    tags = ", ".join(item.get("style_tags") or [])
+    colors = ", ".join(item.get("colors") or [])
+    brand = item.get("brand") or "unknown brand"
+    return (
+        f"Title: {item['title']}\n"
+        f"Category: {item['category']}\n"
+        f"Price: ${item['price']:.2f}\n"
+        f"Platform: {item['platform']}\n"
+        f"Condition: {item['condition']}\n"
+        f"Size: {item['size']}\n"
+        f"Colors: {colors}\n"
+        f"Style tags: {tags}\n"
+        f"Brand: {brand}\n"
+        f"Description: {item['description']}"
+    )
+
+
+def _format_wardrobe_items(items: list[dict]) -> str:
+    """Format wardrobe items for an LLM prompt."""
+    lines = []
+    for item in items:
+        colors = ", ".join(item.get("colors") or [])
+        tags = ", ".join(item.get("style_tags") or [])
+        notes = item.get("notes")
+        line = f"- {item['name']} ({item['category']}, colors: {colors}, tags: {tags})"
+        if notes:
+            line += f" — {notes}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _listing_search_text(listing: dict) -> str:
+    """Build a lowercase searchable string from a listing's text fields."""
+    tags = " ".join(listing.get("style_tags") or [])
+    return f"{listing.get('title', '')} {listing.get('description', '')} {tags}".lower()
+
+
+def _keyword_score(listing: dict, description: str) -> int:
+    """Score a listing by how many description keywords appear in its text."""
+    keywords = [word for word in re.split(r"\W+", description.lower()) if word]
+    if not keywords:
+        return 0
+
+    searchable = _listing_search_text(listing)
+    return sum(1 for keyword in keywords if keyword in searchable)
+
+
+def _matches_size(listing_size: str, size: str) -> bool:
+    """Case-insensitive partial size match (e.g. 'M' matches 'S/M')."""
+    return size.lower() in listing_size.lower()
 
 
 # ── Tool 1: search_listings ───────────────────────────────────────────────────
@@ -69,8 +138,21 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    listings = load_listings()
+    scored: list[tuple[int, dict]] = []
+
+    for listing in listings:
+        if max_price is not None and listing["price"] > max_price:
+            continue
+        if size is not None and not _matches_size(listing["size"], size):
+            continue
+
+        score = _keyword_score(listing, description)
+        if score > 0:
+            scored.append((score, listing))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [listing for _, listing in scored]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +182,30 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    item_details = _format_new_item(new_item)
+    wardrobe_items = wardrobe.get("items") or []
+
+    if not wardrobe_items:
+        prompt = (
+            "You are a thrift fashion stylist. The user is considering buying "
+            "this secondhand item but has not added any wardrobe pieces yet.\n\n"
+            f"NEW ITEM:\n{item_details}\n\n"
+            "Suggest 1-2 complete outfit ideas using general item types "
+            "(not specific owned pieces). Mention what vibes, colors, and "
+            "silhouettes pair well. Include one practical styling tip."
+        )
+    else:
+        wardrobe_text = _format_wardrobe_items(wardrobe_items)
+        prompt = (
+            "You are a thrift fashion stylist. Suggest 1–2 complete outfits "
+            "combining the new item with pieces the user already owns.\n\n"
+            f"NEW ITEM:\n{item_details}\n\n"
+            f"USER'S WARDROBE:\n{wardrobe_text}\n\n"
+            "Name specific wardrobe pieces from the list above. Explain why "
+            "they work together. Include one practical styling tip."
+        )
+
+    return _call_groq(prompt)
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -115,7 +219,7 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
         new_item: The listing dict for the thrifted item.
 
     Returns:
-        A 2–4 sentence string usable as an Instagram/TikTok caption.
+        A 2-4 sentence string usable as an Instagram/TikTok caption.
         If outfit is empty or missing, return a descriptive error message
         string — do NOT raise an exception.
 
@@ -133,5 +237,27 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not outfit or not outfit.strip():
+        title = new_item.get("title", "this item")
+        price = new_item.get("price")
+        platform = new_item.get("platform", "the platform")
+        price_text = f"${price:.2f}" if price is not None else "unknown price"
+        return (
+            f"Could not generate a fit card for {title} ({price_text} on {platform}) "
+            "because the outfit suggestion was missing. Try running the styling step again."
+        )
+
+    item_details = _format_new_item(new_item)
+    prompt = (
+        "Write a casual Instagram/TikTok outfit caption for a thrift find. "
+        "Sound like a real person posting an OOTD, not a product listing.\n\n"
+        f"ITEM:\n{item_details}\n\n"
+        f"OUTFIT STYLING:\n{outfit.strip()}\n\n"
+        "Rules:\n"
+        "- 2-4 sentences only\n"
+        "- Mention the item name, price, and platform naturally once each\n"
+        "- Capture the outfit vibe in specific terms\n"
+        "- Return only the caption text, no quotes or labels"
+    )
+
+    return _call_groq(prompt, temperature=0.9)
