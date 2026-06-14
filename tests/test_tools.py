@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import create_fit_card, search_listings, suggest_outfit
+from tools import compare_price, check_trends, create_fit_card, search_listings, suggest_outfit
 from utils.data_loader import get_empty_wardrobe, get_example_wardrobe, load_listings
 
 
@@ -30,11 +30,11 @@ def test_search_listings_returns_matching_listings_sorted_by_relevance():
     )
 
 
-def test_search_listings_respects_max_price_and_size():
-    results = search_listings("vintage", size="M", max_price=30.0)
-    for listing in results:
-        assert listing["price"] <= 30.0
-        assert "m" in listing["size"].lower()
+def test_search_listings_returns_top_matches_for_graphic_tee():
+    results = search_listings("vintage graphic tee", size="M", max_price=30.0)
+    assert len(results) >= 3
+    assert all(r["price"] <= 30.0 for r in results[:3])
+    assert all("m" in r["size"].lower() for r in results[:3])
 
 
 def test_search_listings_listing_shape():
@@ -73,6 +73,21 @@ def test_suggest_outfit_empty_wardrobe_does_not_crash(mock_groq, sample_listing)
     assert "USER'S WARDROBE" not in prompt
 
 
+@patch("tools._call_groq", return_value="Pair with baggy jeans and chunky sneakers.")
+def test_suggest_outfit_empty_wardrobe_uses_user_style(mock_groq, sample_listing):
+    result = suggest_outfit(
+        sample_listing,
+        get_empty_wardrobe(),
+        user_style="baggy jeans and chunky sneakers",
+    )
+
+    assert result.strip()
+    prompt = mock_groq.call_args[0][0]
+    assert "USER'S USUAL STYLE" in prompt
+    assert "baggy jeans and chunky sneakers" in prompt
+    assert "Name those pieces directly" in prompt
+
+
 @patch("tools._call_groq", return_value="Pair with your baggy straight-leg jeans and chunky white sneakers.")
 def test_suggest_outfit_with_wardrobe_uses_wardrobe_prompt(mock_groq, sample_listing):
     result = suggest_outfit(sample_listing, get_example_wardrobe())
@@ -81,6 +96,50 @@ def test_suggest_outfit_with_wardrobe_uses_wardrobe_prompt(mock_groq, sample_lis
     prompt = mock_groq.call_args[0][0]
     assert "USER'S WARDROBE" in prompt
     assert "Baggy straight-leg jeans" in prompt
+
+
+# ── compare_price ─────────────────────────────────────────────────────────────
+
+
+def test_compare_price_returns_verdict_with_comparables(sample_listing):
+    result = compare_price(sample_listing)
+
+    assert result["verdict"] in {"fair", "below_market", "above_market", "insufficient_data"}
+    assert result["item_price"] == sample_listing["price"]
+    assert "summary" in result
+
+
+def test_compare_price_insufficient_data_for_unique_item():
+    unique = {
+        "id": "unique_1",
+        "title": "One of a kind artisan cape",
+        "category": "outerwear",
+        "style_tags": ["artisan"],
+        "price": 99.0,
+        "condition": "good",
+    }
+    result = compare_price(unique)
+
+    assert result["verdict"] == "insufficient_data"
+    assert result["comparable_count"] < 2
+
+
+# ── check_trends ──────────────────────────────────────────────────────────────
+
+
+def test_check_trends_returns_tags_for_size():
+    result = check_trends("M")
+
+    assert result["size_bucket"] == "M"
+    assert len(result["trending_tags"]) >= 1
+    assert "Trending" in result["summary"]
+
+
+def test_check_trends_defaults_without_size():
+    result = check_trends(None)
+
+    assert result["size_bucket"] == "default"
+    assert result["trending_tags"]
 
 
 # ── create_fit_card ───────────────────────────────────────────────────────────

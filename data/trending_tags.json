@@ -1,0 +1,12 @@
+{
+  "updated": "2026-06-01",
+  "platform": "depop (mock feed)",
+  "by_size": {
+    "XS": ["coquette", "micro mini", "ballet flats", "lace trim"],
+    "S": ["coquette", "baby tee", "low rise", "ballet flats"],
+    "M": ["baggy denim", "graphic tee", "blokecore", "chunky sneakers"],
+    "L": ["oversized layers", "workwear", "wide leg", "vintage sportswear"],
+    "XL": ["oversized layers", "streetwear", "cargo", "vintage sportswear"],
+    "default": ["y2k", "vintage tee", "wide leg", "grunge", "earth tones"]
+  }
+}
